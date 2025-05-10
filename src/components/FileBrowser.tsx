@@ -46,20 +46,29 @@ const uploadToS3Index = async (fileKey: string, result: any) => {
       return;
     }
 
-    // Prepare metadata for upload
-    const metadataForS3 = {
-      key: fileKey,
-      exifDate: result.exifDate && result.exifDate instanceof Date && !isNaN(result.exifDate.getTime())
-        ? result.exifDate.toISOString()
-        : result.exifDate ? String(result.exifDate) : undefined,
-      width: result.dimensions?.width,
-      height: result.dimensions?.height,
-      originalWidth: result.dimensions?.originalWidth,
-      originalHeight: result.dimensions?.originalHeight,
-      thumbnailDataUrl: result.thumbnailDataUrl,
-    };
+    // Create a metadata object with only defined values
+    const metadataForS3: Record<string, any> = { key: fileKey };
+
+    // Only add properties that have actual values (not undefined or null)
+    if (result.exifDate && result.exifDate instanceof Date && !isNaN(result.exifDate.getTime())) {
+      metadataForS3.exifDate = result.exifDate.toISOString();
+    } else if (result.exifDate) {
+      metadataForS3.exifDate = String(result.exifDate);
+    }
+
+    // Add dimension fields only if they exist
+    if (result.dimensions?.width) metadataForS3.width = result.dimensions.width;
+    if (result.dimensions?.height) metadataForS3.height = result.dimensions.height;
+    if (result.dimensions?.originalWidth) metadataForS3.originalWidth = result.dimensions.originalWidth;
+    if (result.dimensions?.originalHeight) metadataForS3.originalHeight = result.dimensions.originalHeight;
+
+    // Only add thumbnail if we actually have one
+    if (result.thumbnailDataUrl) {
+      metadataForS3.thumbnailDataUrl = result.thumbnailDataUrl;
+    }
 
     console.log(`[INDEX UPDATE] Prepared metadata for ${fileKey}:`, metadataForS3);
+    console.log(`[INDEX UPDATE] Fields included: ${Object.keys(metadataForS3).join(', ')}`);
 
     // Send metadata to S3 index endpoint
     await updateS3Index(fileKey, metadataForS3);

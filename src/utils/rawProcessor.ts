@@ -227,17 +227,30 @@ export async function updateS3Index(
   }
 ) {
   try {
-    console.log('[S3 INDEX] Sending metadata to API for:', fileKey, metadata);
+    console.log('[S3 INDEX] Sending metadata to API for:', fileKey);
+    console.log('[S3 INDEX] Fields to update:', Object.keys(metadata).filter(k => metadata[k] !== undefined));
+
+    // Create a clean metadata object without undefined values
+    const cleanMetadata: Record<string, any> = {};
+
+    // Only include fields with actual values
+    Object.entries(metadata).forEach(([key, value]) => {
+      if (value !== undefined) {
+        // Special handling for date objects
+        if (key === 'exifDate' && value instanceof Date && !isNaN(value.getTime())) {
+          cleanMetadata[key] = value.toISOString();
+        } else if (key === 'exifDate' && value) {
+          // Handle string dates or other formats
+          cleanMetadata[key] = String(value);
+        } else {
+          cleanMetadata[key] = value;
+        }
+      }
+    });
 
     const requestBody = {
       fileKey,
-      metadata: {
-        ...metadata,
-        // Convert Date objects to strings for JSON, with proper type checking
-        exifDate: metadata.exifDate && metadata.exifDate instanceof Date && !isNaN(metadata.exifDate.getTime())
-          ? metadata.exifDate.toISOString()
-          : metadata.exifDate ? String(metadata.exifDate) : undefined,
-      }
+      metadata: cleanMetadata
     };
 
     console.log('[S3 INDEX] API request body:', JSON.stringify(requestBody));

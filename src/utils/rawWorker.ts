@@ -329,8 +329,30 @@ export class RawWorkerPool {
 
   // Update processInMainThread method to include worker ID
   private async processInMainThread(file: { key: string; url: string }, workerId: number): Promise<any> {
-    // Import the necessary modules dynamically
-    const { default: LibRawModule } = await import('libraw-wasm');
+    // Import the necessary modules dynamically with better error handling
+    let LibRawModule;
+    try {
+      // First update progress so the UI isn't frozen
+      this.onProgress?.(file.key, 'Loading LibRaw...');
+      this.updateActiveTasks(file.key, 'Loading LibRaw...');
+      this.onWorkerProgress?.(workerId, file.key, 'Loading LibRaw...');
+
+      // Safe import with error checking
+      const _module = await import('libraw-wasm');
+      if (!_module || !_module.default) {
+        throw new Error('Failed to load LibRaw module');
+      }
+      LibRawModule = _module.default;
+
+      // Check that LibRawModule is a constructor
+      if (typeof LibRawModule !== 'function') {
+        console.error('LibRawModule is not a constructor:', typeof LibRawModule);
+        throw new Error('LibRaw module is not a valid constructor');
+      }
+    } catch (error) {
+      console.error('Error importing LibRaw module:', error);
+      throw new Error(`Failed to import LibRaw: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     try {
       // Notify worker start
@@ -355,13 +377,31 @@ export class RawWorkerPool {
       this.updateActiveTasks(file.key, 'Decoding RAW file...');
       this.onWorkerProgress?.(workerId, file.key, 'Decoding RAW file...');
 
-      const rawProcessor = new LibRawModule();
+      // Instantiate with safeguards
+      let rawProcessor;
+      try {
+        rawProcessor = new LibRawModule();
+      } catch (error) {
+        console.error('Error instantiating LibRawModule:', error);
+        throw new Error('Failed to create LibRaw processor instance');
+      }
+
+      // Check that rawProcessor has the expected methods
+      if (!rawProcessor || typeof rawProcessor.open !== 'function') {
+        throw new Error('LibRaw processor instance is invalid');
+      }
+
       await rawProcessor.open(new Uint8Array(imageArrayBuffer));
 
       // Extract image data
       this.onProgress?.(file.key, 'Processing image data...');
       this.updateActiveTasks(file.key, 'Processing image data...');
       this.onWorkerProgress?.(workerId, file.key, 'Processing image data...');
+
+      // Verify imageData method exists
+      if (typeof rawProcessor.imageData !== 'function') {
+        throw new Error('LibRaw processor missing imageData method');
+      }
 
       const decodedImage = await rawProcessor.imageData();
       if (!decodedImage || !decodedImage.data) {
@@ -374,16 +414,32 @@ export class RawWorkerPool {
       this.onWorkerProgress?.(workerId, file.key, 'Extracting metadata...');
 
       // Fix the TypeScript error by checking if metadata method exists
-      const metadata = typeof rawProcessor.metadata === 'function'
-        ? await rawProcessor.metadata()
-        : {};
+      let metadata = {};
+      try {
+        if (typeof rawProcessor.metadata === 'function') {
+          metadata = await rawProcessor.metadata();
+        } else {
+          console.warn('LibRaw processor missing metadata method - continuing without metadata');
+        }
+      } catch (metadataError) {
+        console.warn('Error extracting metadata - continuing without metadata:', metadataError);
+        // Continue without metadata rather than failing the entire process
+      }
 
       // Process timestamp
       let exifDate;
-      if (metadata && metadata.timestamp) {
-        const secondsSinceEpoch = metadata.timestamp.valueOf();
-        const millisecondsSinceEpoch = secondsSinceEpoch * 1000;
-        exifDate = new Date(millisecondsSinceEpoch);
+      if (metadata && 'timestamp' in metadata && metadata.timestamp) {
+        try {
+          // Ensure we're working with a number
+          const secondsSinceEpoch = Number(metadata.timestamp.valueOf());
+          if (!isNaN(secondsSinceEpoch)) {
+            const millisecondsSinceEpoch = secondsSinceEpoch * 1000;
+            exifDate = new Date(millisecondsSinceEpoch);
+            console.log(`[Worker ${workerId}] Extracted EXIF date: ${exifDate.toISOString()}`);
+          }
+        } catch (dateError) {
+          console.warn(`[Worker ${workerId}] Error processing timestamp:`, dateError);
+        }
       }
 
       // Generate thumbnail
@@ -393,9 +449,17 @@ export class RawWorkerPool {
 
       let thumbnailDataUrl;
       try {
+        // Safety check for browser environment
+        if (typeof document === 'undefined') {
+          console.warn('[Worker] Document is not defined - thumbnail generation may not work');
+        }
+
         // Use canvas for thumbnail generation
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          throw new Error('Failed to get 2D context from canvas');
+        }
 
         // Prepare dimensions
         const thumbSize = 240;
@@ -416,27 +480,36 @@ export class RawWorkerPool {
         canvas.width = thumbWidth;
         canvas.height = thumbHeight;
 
-        // Create ImageData
+        // Create ImageData - with safety checks
         let imageData;
-        if (decodedImage.colors === 4) {
-          imageData = new ImageData(
-            new Uint8ClampedArray(decodedImage.data),
-            decodedImage.width,
-            decodedImage.height
-          );
-        } else if (decodedImage.colors === 3) {
-          // Convert RGB to RGBA
-          const numPixels = decodedImage.width * decodedImage.height;
-          const rgbaData = new Uint8ClampedArray(numPixels * 4);
-          for (let i = 0; i < numPixels; i++) {
-            rgbaData[i * 4 + 0] = decodedImage.data[i * 3 + 0]; // R
-            rgbaData[i * 4 + 1] = decodedImage.data[i * 3 + 1]; // G
-            rgbaData[i * 4 + 2] = decodedImage.data[i * 3 + 2]; // B
-            rgbaData[i * 4 + 3] = 255; // Alpha
+        if (typeof ImageData === 'undefined') {
+          throw new Error('ImageData constructor not available');
+        }
+
+        try {
+          if (decodedImage.colors === 4) {
+            imageData = new ImageData(
+              new Uint8ClampedArray(decodedImage.data),
+              decodedImage.width,
+              decodedImage.height
+            );
+          } else if (decodedImage.colors === 3) {
+            // Convert RGB to RGBA
+            const numPixels = decodedImage.width * decodedImage.height;
+            const rgbaData = new Uint8ClampedArray(numPixels * 4);
+            for (let i = 0; i < numPixels; i++) {
+              rgbaData[i * 4 + 0] = decodedImage.data[i * 3 + 0]; // R
+              rgbaData[i * 4 + 1] = decodedImage.data[i * 3 + 1]; // G
+              rgbaData[i * 4 + 2] = decodedImage.data[i * 3 + 2]; // B
+              rgbaData[i * 4 + 3] = 255; // Alpha
+            }
+            imageData = new ImageData(rgbaData, decodedImage.width, decodedImage.height);
+          } else {
+            throw new Error(`Unsupported image color components: ${decodedImage.colors}`);
           }
-          imageData = new ImageData(rgbaData, decodedImage.width, decodedImage.height);
-        } else {
-          throw new Error(`Unsupported image color components: ${decodedImage.colors}`);
+        } catch (imageDataError) {
+          console.error(`[Worker ${workerId}] Error creating ImageData:`, imageDataError);
+          throw new Error('Failed to create ImageData');
         }
 
         // Draw to temporary full-size canvas first
@@ -453,8 +526,19 @@ export class RawWorkerPool {
             ctx.imageSmoothingQuality = 'high';
             ctx.drawImage(tempCanvas, 0, 0, thumbWidth, thumbHeight);
 
-            // Convert to data URL
-            thumbnailDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+            // Convert to data URL with error handling
+            try {
+              thumbnailDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+            } catch (dataUrlError) {
+              console.error(`[Worker ${workerId}] Error generating data URL:`, dataUrlError);
+              throw new Error('Failed to generate thumbnail data URL');
+            }
+
+            // Verify the data URL was created correctly
+            if (!thumbnailDataUrl || typeof thumbnailDataUrl !== 'string' || !thumbnailDataUrl.startsWith('data:image/jpeg')) {
+              console.error(`[Worker ${workerId}] Invalid thumbnail data URL generated`);
+              throw new Error('Invalid thumbnail data URL generated');
+            }
           }
         }
       } catch (thumbErr) {

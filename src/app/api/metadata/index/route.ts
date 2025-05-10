@@ -109,13 +109,32 @@ export async function POST(request: NextRequest) {
       storableMetadata.s3LastModified = new Date(metadata.s3LastModified).toISOString();
     }
 
-    // Log the final metadata we're about to save
-    console.log('[API] Final metadata to store:', storableMetadata);
+    // Get existing file metadata or create a new entry
+    const existingMetadata = indexData.files[fileKey] || {};
 
-    indexData.files[fileKey] = {
-      ...(indexData.files[fileKey] || {}),
-      ...storableMetadata,
-    };
+    // Create a new metadata object that preserves existing fields
+    // and only updates fields that are actually defined in the new metadata
+    const updatedMetadata = { ...existingMetadata };
+
+    // Loop through storableMetadata and only copy defined values
+    Object.entries(storableMetadata).forEach(([key, value]) => {
+      if (value !== undefined) {
+        updatedMetadata[key] = value;
+      } else {
+        console.log(`[API] Preserving existing ${key} value for ${fileKey}`);
+      }
+    });
+
+    // Log the final metadata we're about to save
+    console.log('[API] Final metadata to store:', updatedMetadata);
+    console.log('[API] Fields preserved from existing metadata:',
+      Object.keys(existingMetadata).filter(key =>
+        storableMetadata[key] === undefined && existingMetadata[key] !== undefined
+      )
+    );
+
+    // Update the index with our carefully merged metadata
+    indexData.files[fileKey] = updatedMetadata;
 
     const success = await putIndexFile(indexData);
 
