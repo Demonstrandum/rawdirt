@@ -348,11 +348,11 @@ export class RawWorkerPool {
       // Safe import with error checking - handle both browser and worker contexts
       if (typeof window !== 'undefined') {
         // Browser context - use dynamic import
-        const module = await import('libraw-wasm');
-        if (!module || !module.default) {
+        const _module = await import('libraw-wasm');
+        if (!_module || !_module.default) {
           throw new Error('Failed to load LibRaw module');
         }
-        LibRawModule = module.default;
+        LibRawModule = _module.default;
       } else if (typeof self !== 'undefined' && !self.window) {
         // Worker context - assume LibRaw is available on self
         if (!self.LibRaw) {
