@@ -52,6 +52,59 @@ const hydrateFile = (file: RawFile, state: RawdirtStore, metadataMap?: Record<st
     return { ...file, ...cachedMetadata };
   }
 
+  // Check local storage for thumbnail data
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const localStorageKey = `rawdirt_thumb_${file.key}`;
+      const localData = localStorage.getItem(localStorageKey);
+
+      if (localData) {
+        try {
+          const localMetadata = JSON.parse(localData);
+          console.log(`[Store] Using local storage metadata for ${file.key}`);
+
+          // Merge with the file but prioritize any other sources over local storage
+          const hydratedWithLocal = { ...file };
+
+          // Apply local storage values only for fields that don't exist in the file
+          if (!hydratedWithLocal.thumbnailDataUrl && localMetadata.thumbnailDataUrl) {
+            hydratedWithLocal.thumbnailDataUrl = localMetadata.thumbnailDataUrl;
+          }
+
+          if (!hydratedWithLocal.exifDate && localMetadata.exifDate) {
+            try {
+              hydratedWithLocal.exifDate = new Date(localMetadata.exifDate);
+            } catch (e) {
+              console.error(`[Store] Error parsing exifDate from local storage: ${localMetadata.exifDate}`, e);
+            }
+          }
+
+          if (!hydratedWithLocal.width && localMetadata.width) {
+            hydratedWithLocal.width = localMetadata.width;
+          }
+
+          if (!hydratedWithLocal.height && localMetadata.height) {
+            hydratedWithLocal.height = localMetadata.height;
+          }
+
+          if (!hydratedWithLocal.originalWidth && localMetadata.originalWidth) {
+            hydratedWithLocal.originalWidth = localMetadata.originalWidth;
+          }
+
+          if (!hydratedWithLocal.originalHeight && localMetadata.originalHeight) {
+            hydratedWithLocal.originalHeight = localMetadata.originalHeight;
+          }
+
+          return hydratedWithLocal;
+        } catch (e) {
+          console.error(`[Store] Error parsing local storage data for ${file.key}:`, e);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[Store] Error accessing localStorage:', e);
+  }
+
   // Fall back to metadata from the index
   if (metadataMap && metadataMap[file.key]) {
     const indexedMeta = metadataMap[file.key];
