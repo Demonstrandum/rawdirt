@@ -11,7 +11,7 @@ import {
   Divider,
   Paper
 } from '@mui/material';
-import { RawFile, RawFileMetadata } from '@/types';
+import { RawFile } from '@/types';
 import useStore from '@/store/useStore';
 
 interface MetadataEditorProps {
@@ -19,7 +19,7 @@ interface MetadataEditorProps {
 }
 
 const MetadataEditor = ({ file }: MetadataEditorProps) => {
-  const { metadataMap, updateMetadata } = useStore();
+  const { metadataMap, updateFileMetadata } = useStore();
   const metadata = metadataMap[file.key] || {
     id: file.key,
     tags: [],
@@ -45,24 +45,26 @@ const MetadataEditor = ({ file }: MetadataEditorProps) => {
     if (!newTag.trim()) return;
 
     const updatedTags = [...metadata.tags, newTag.trim()];
-    updateMetadata(file.key, { tags: updatedTags });
+    updateFileMetadata(file.key, { otherMeta: { tags: updatedTags } });
     setNewTag('');
   };
 
   const handleRemoveTag = (tagToRemove: string) => {
     const updatedTags = metadata.tags.filter(tag => tag !== tagToRemove);
-    updateMetadata(file.key, { tags: updatedTags });
+    updateFileMetadata(file.key, { otherMeta: { tags: updatedTags } });
   };
 
   const handleSaveMetadata = () => {
-    updateMetadata(file.key, {
-      title,
-      description,
-      location: {
-        ...(metadata.location || {}),
-        locationName
-      },
-      rating
+    updateFileMetadata(file.key, {
+      otherMeta: {
+        title,
+        description,
+        location: {
+          ...(metadata.location || {}),
+          locationName
+        },
+        rating
+      }
     });
   };
 

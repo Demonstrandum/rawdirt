@@ -1,7 +1,26 @@
 declare module 'libraw-wasm' {
   interface LibRawOptions {
-    // Define any options that can be passed to rawProcessor.open() if known
-    // e.g., halfSize?: boolean;
+    // Define options that can be passed to rawProcessor.open()
+    halfSize?: boolean;
+    useCamera?: boolean;
+    outputBps?: number;
+    outputcolor?: number;
+    noAutoBright?: boolean;
+    autoBrightThreshold?: number;
+    adjust_maximum_thr?: number;
+    user_qual?: number;
+  }
+
+  interface Metadata {
+    timestamp?: number;
+    model?: string;
+    make?: string;
+    orientation?: number;
+    iso?: number;
+    shutter?: number;
+    aperture?: number;
+    focal_length?: number;
+    [key: string]: unknown;
   }
 
   interface DecodedImage {
@@ -10,6 +29,8 @@ declare module 'libraw-wasm' {
     height: number;
     colors: number; // Number of color components (e.g., 3 for RGB, 4 for RGBA)
     bits: number; // Bits per sample
+    rawWidth?: number;
+    rawHeight?: number;
     // type?: 'rgb' | 'rgba' | string; // Type might not always be present
     // Add other properties returned by imageData() if known
   }
@@ -18,8 +39,8 @@ declare module 'libraw-wasm' {
     constructor();
     open(data: Uint8Array, options?: LibRawOptions): Promise<void>;
     imageData(): Promise<DecodedImage>;
-    metadata?(fullOutput?: boolean): Promise<any>; // Assuming a metadata method might exist
-    close?(): Promise<void>; // Assuming a close/dispose method might exist
+    metadata(fullOutput?: boolean): Promise<Metadata>;
+    close(): Promise<void>;
     // Add other methods as per the library's API
   }
 
