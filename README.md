@@ -1,5 +1,7 @@
 # Rawdirt
 
+(Pure vibecoding. I apologize in advance.)
+
 A Next.js application for viewing and managing .RW2 raw image files stored in an AWS S3 bucket.
 
 ## Features
