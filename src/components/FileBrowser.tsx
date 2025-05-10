@@ -424,7 +424,7 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
         }
       }
 
-      // Filter out files without URLs
+      // Filter out files without URLs and files that already have metadata
       const filesToProcess = allFiles.filter(file => file.url);
 
       // Update total to match actual processable files
@@ -622,16 +622,27 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
           // Filter out files without URLs and files that already have metadata
           const validFiles = filesToProcess.filter(file => {
             // Skip files without URLs
-            if (!file.url) return false;
-
-            // Skip files that already have good metadata
-            if (file.exifDate && file.thumbnailDataUrl &&
-                file.width && file.height &&
-                file.originalWidth && file.originalHeight) {
-              console.log(`Skipping ${file.key} - already has complete metadata`);
+            if (!file.url) {
+              console.log(`Skipping ${file.key} - no URL`);
               return false;
             }
 
+            // Skip files that already have good metadata - be more lenient with validation
+            // Sometimes thumbnails can exist but width/height might be missing
+            // Only require the essential thumbnailDataUrl and exifDate
+            if (file.thumbnailDataUrl && file.exifDate) {
+              console.log(`Skipping ${file.key} - already has essential metadata (thumbnail and EXIF date)`);
+              return false;
+            }
+
+            // Extra logging to understand what's happening with the file
+            const missingFields: string[] = [];
+            if (!file.thumbnailDataUrl) missingFields.push('thumbnailDataUrl');
+            if (!file.exifDate) missingFields.push('exifDate');
+            if (!file.width || !file.height) missingFields.push('dimensions');
+            if (!file.originalWidth || !file.originalHeight) missingFields.push('originalDimensions');
+
+            console.log(`Processing ${file.key} - missing: ${missingFields.join(', ')}`);
             return true;
           });
 

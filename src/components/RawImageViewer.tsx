@@ -20,6 +20,7 @@ const RawImageViewer = ({ file }: RawImageViewerProps) => {
 
   useEffect(() => {
     let currentEffectIsActive = true;
+    let imageUrl: string | null = null;
 
     const currentFileUrl = file.url;
     const currentFileKey = file.key;
@@ -39,6 +40,8 @@ const RawImageViewer = ({ file }: RawImageViewerProps) => {
     setDecodeProgress('Initializing...');
 
     const loadAndDisplayImage = async () => {
+      let localResult: any = null;
+
       try {
         // Process the file using the shared utility
         const result = await processRawFile(
@@ -52,6 +55,7 @@ const RawImageViewer = ({ file }: RawImageViewerProps) => {
             onComplete: (data) => {
               if (currentEffectIsActive) {
                 setProcessResult(data);
+                localResult = data;
               }
             },
             onError: (err) => {
@@ -63,6 +67,7 @@ const RawImageViewer = ({ file }: RawImageViewerProps) => {
         );
 
         if (!currentEffectIsActive) return;
+        localResult = result;
 
         // Get decoded image data from the result
         const decodedImage = result.dimensions;
@@ -93,6 +98,21 @@ const RawImageViewer = ({ file }: RawImageViewerProps) => {
 
           // Draw the full-resolution image data directly to canvas
           ctx.putImageData(fullImageData, 0, 0);
+
+          // Clear the large imageData to help garbage collection
+          if (currentEffectIsActive) {
+            // We need to keep a reference for cleanup
+            localResult = { ...result };
+
+            // Schedule cleanup of large data after it's drawn
+            setTimeout(() => {
+              if (localResult?.imageData?.data) {
+                // Clear the ArrayBuffer but keep the metadata
+                localResult.imageData.data = null;
+                console.log('Cleaned up large image data buffer');
+              }
+            }, 500);
+          }
         } else {
           // Fallback to thumbnail if for some reason imageData is missing
           console.warn('Full image data not available, falling back to thumbnail');
@@ -101,12 +121,13 @@ const RawImageViewer = ({ file }: RawImageViewerProps) => {
           if (!imageData.ok) throw new Error('Failed to get image data');
 
           const blob = await imageData.blob();
-          const imageUrl = URL.createObjectURL(blob);
+          imageUrl = URL.createObjectURL(blob);
 
           const img = new Image();
           img.onload = () => {
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            URL.revokeObjectURL(imageUrl);
+            if (ctx && currentEffectIsActive) {
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            }
           };
           img.src = imageUrl;
         }
@@ -138,8 +159,35 @@ const RawImageViewer = ({ file }: RawImageViewerProps) => {
 
     return () => {
       currentEffectIsActive = false;
+
+      // Clean up any object URLs
+      if (imageUrl) {
+        URL.revokeObjectURL(imageUrl);
+        imageUrl = null;
+      }
+
+      // Clear canvas
+      if (canvasRef.current) {
+        const ctx = canvasRef.current.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        }
+
+        // Reset canvas size to minimal dimensions to free up memory
+        canvasRef.current.width = 1;
+        canvasRef.current.height = 1;
+      }
+
+      // Clean up process result
+      if (processResult) {
+        // Clear large data structures
+        if (processResult.imageData && processResult.imageData.data) {
+          processResult.imageData.data = null;
+        }
+        setProcessResult(null);
+      }
     };
-  }, [file.url, file.key, updateFileMetadata]);
+  }, [file.url, file.key, updateFileMetadata, processResult]);
 
   return (
     <Box sx={{ position: 'relative', width: '100%', height: '100%', backgroundColor: '#222', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

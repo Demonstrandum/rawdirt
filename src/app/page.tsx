@@ -12,6 +12,8 @@ import useStore from '@/store/useStore';
 import FileBrowser from '@/components/FileBrowser';
 import RawImageViewer from '@/components/RawImageViewer';
 import MetadataEditor from '@/components/MetadataEditor';
+import SyncStatusIndicator from '@/components/SyncStatusIndicator';
+import MemoryCleanupButton from '@/components/MemoryCleanupButton';
 
 // Define these types here if not already in @/types and imported
 interface RawFileFromIndex { // Duplicating from API route for now, ideally share from @/types
@@ -258,7 +260,12 @@ export default function Home() {
             <Typography variant="subtitle1">
               Browser for .RW2 Raw Files
             </Typography>
+            <Box sx={{ mt: 1 }}>
+              <MemoryCleanupButton />
+            </Box>
           </Box>
+
+          <SyncStatusIndicator />
 
           <Box component="main" sx={{ flex: 1, overflow: 'hidden', display: 'flex' }}>
             {/* File Browser */}

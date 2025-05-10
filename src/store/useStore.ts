@@ -30,6 +30,13 @@ interface RawdirtStore {
   // Metadata cache for files not in current view
   metadataCache: Record<string, Partial<RawFile>>;
 
+  // Sync state
+  pendingChanges: Record<string, Partial<RawFile>>; // Files with unsaved changes
+  lastSyncTime: number; // Last time changes were pushed to S3
+  isSyncing: boolean; // Whether a sync is in progress
+  syncError: string | null; // Error from last sync attempt
+  nextSyncTime: number; // Scheduled time for next automatic sync
+
   // Actions
   setFiles: (files: RawFile[], nextToken?: string, totalFoundInScan?: number, hasMore?: boolean, metadataMapForHydration?: Record<string, Partial<RawFileFromIndex>>) => void;
   appendFiles: (newFiles: RawFile[], nextToken?: string, totalAddedInScan?: number, hasMore?: boolean, metadataMapForHydration?: Record<string, Partial<RawFileFromIndex>>) => void;
@@ -38,8 +45,14 @@ interface RawdirtStore {
   updateFileMetadata: (fileKey: string, metadataUpdates: Partial<Pick<RawFile, 'exifDate' | 'url' | 'thumbnailDataUrl' | 'thumbnailS3Key' | 'width' | 'height' | 'originalWidth' | 'originalHeight' | 'size' | 'lastModified'> & { otherMeta?: any }>) => void;
   incrementPage: () => void;
   resetPagination: () => void;
-  setGrandTotalRawFiles: (total: number) => void; // Added this
-  getCachedMetadata: (fileKey: string) => Partial<RawFile> | null; // Add method to retrieve cached metadata
+  setGrandTotalRawFiles: (total: number) => void;
+  getCachedMetadata: (fileKey: string) => Partial<RawFile> | null;
+
+  // New sync functions
+  syncChangesToS3: () => Promise<void>; // Manually trigger sync
+  scheduleSyncToS3: () => void; // Schedule next automatic sync
+  clearPendingChanges: () => void; // Clear pending changes without syncing
+  hasPendingChanges: () => boolean; // Check if there are pending changes
 }
 
 // Helper function to hydrate a file with preloaded metadata
@@ -165,6 +178,11 @@ const useStore = create<RawdirtStore>((set, get) => ({
   grandTotalRawFiles: 0,
   metadataMap: {},
   metadataCache: {},
+  pendingChanges: {},
+  lastSyncTime: 0,
+  isSyncing: false,
+  syncError: null,
+  nextSyncTime: 0,
 
   // Actions
   setFiles: (files, nextToken, totalFoundInScan, hasMore, metadataMapForHydration) => set(state => ({
@@ -228,31 +246,64 @@ const useStore = create<RawdirtStore>((set, get) => ({
     let newFiles = [...state.files];
     let newSelectedFile = state.selectedFile;
     let newMetadataCache = { ...state.metadataCache };
+    let newPendingChanges = { ...state.pendingChanges };
+
+    // Create clean metadata update object with only defined values
+    const cleanUpdates: Partial<RawFile> = {};
+    Object.entries(metadataUpdates).forEach(([key, value]) => {
+      if (value !== undefined) {
+        cleanUpdates[key] = value;
+      }
+    });
+
+    // Always save to pending changes
+    newPendingChanges[fileKey] = {
+      ...newPendingChanges[fileKey],
+      ...cleanUpdates,
+      key: fileKey // Ensure key is set
+    };
+
+    // Save to localStorage for persistence across page reloads
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const localStorageKey = `rawdirt_thumb_${fileKey}`;
+        localStorage.setItem(localStorageKey, JSON.stringify(newPendingChanges[fileKey]));
+      }
+    } catch (e) {
+      console.warn('[Store] Error saving to localStorage:', e);
+    }
 
     if (fileIndex !== -1) {
-      newFiles[fileIndex] = { ...newFiles[fileIndex], ...metadataUpdates };
+      // Update in current files array if present
+      newFiles[fileIndex] = { ...newFiles[fileIndex], ...cleanUpdates };
       if (state.selectedFile?.key === fileKey) {
-        newSelectedFile = { ...state.selectedFile, ...metadataUpdates };
+        newSelectedFile = { ...state.selectedFile, ...cleanUpdates };
       }
       console.log('[Store] Updated file in state, new file data:', newFiles[fileIndex]);
     } else {
-      // File not in current state (likely from another page) - update metadataCache
+      // File not in current state - update metadata cache
       console.log(`[Store] File not currently in state (may be on another page): ${fileKey}`);
 
       // Store in metadata cache
       newMetadataCache[fileKey] = {
         ...newMetadataCache[fileKey],
-        ...metadataUpdates,
-        key: fileKey, // Ensure the key is set
+        ...cleanUpdates,
+        key: fileKey // Ensure the key is set
       };
 
       console.log(`[Store] Added/updated metadata in cache for: ${fileKey}`);
     }
 
+    // Schedule a sync to S3 if not already scheduled
+    if (state.nextSyncTime === 0) {
+      setTimeout(() => get().scheduleSyncToS3(), 100);
+    }
+
     return {
       files: newFiles,
       selectedFile: newSelectedFile,
-      metadataCache: newMetadataCache
+      metadataCache: newMetadataCache,
+      pendingChanges: newPendingChanges
     };
   }),
 
@@ -269,6 +320,106 @@ const useStore = create<RawdirtStore>((set, get) => ({
   setGrandTotalRawFiles: (total) => set({ grandTotalRawFiles: total }),
 
   getCachedMetadata: (fileKey) => get().metadataCache[fileKey] || null,
+
+  syncChangesToS3: async () => {
+    const state = get();
+
+    // Don't sync if already syncing or no changes
+    if (state.isSyncing || Object.keys(state.pendingChanges).length === 0) {
+      return;
+    }
+
+    set({ isSyncing: true, syncError: null });
+    console.log(`[Store] Starting sync of ${Object.keys(state.pendingChanges).length} pending changes to S3`);
+
+    try {
+      // Clone pending changes to work with
+      const changesToSync = { ...state.pendingChanges };
+
+      // Create a batch update request
+      const response = await fetch('/api/metadata/batch-update', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          files: changesToSync
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to sync: ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log(`[Store] Sync complete: ${result.updatedCount} files updated`);
+
+      // Clear synced changes
+      set({
+        isSyncing: false,
+        lastSyncTime: Date.now(),
+        pendingChanges: {},
+        nextSyncTime: 0
+      });
+
+    } catch (error) {
+      console.error('[Store] Error syncing to S3:', error);
+
+      // Update state with error but keep pending changes
+      set({
+        isSyncing: false,
+        syncError: error instanceof Error ? error.message : String(error),
+        nextSyncTime: Date.now() + 30000 // Try again in 30 seconds
+      });
+
+      // Re-throw for caller
+      throw error;
+    }
+  },
+
+  scheduleSyncToS3: () => set(state => {
+    // Don't schedule if a sync is already scheduled or in progress
+    if (state.isSyncing || (state.nextSyncTime > 0 && state.nextSyncTime > Date.now())) {
+      return state;
+    }
+
+    // Don't schedule if no pending changes
+    if (Object.keys(state.pendingChanges).length === 0) {
+      return { ...state, nextSyncTime: 0 };
+    }
+
+    // Schedule sync in 10 seconds
+    const syncDelay = 10000; // 10 seconds
+    const nextSyncTime = Date.now() + syncDelay;
+
+    console.log(`[Store] Scheduled sync in ${syncDelay}ms at ${new Date(nextSyncTime).toLocaleTimeString()}`);
+
+    // Set timeout to perform the sync
+    setTimeout(async () => {
+      try {
+        await get().syncChangesToS3();
+      } catch (error) {
+        console.error('[Store] Sync error:', error);
+      }
+    }, syncDelay);
+
+    return {
+      ...state,
+      nextSyncTime
+    };
+  }),
+
+  clearPendingChanges: () => set(state => ({
+    ...state,
+    pendingChanges: {},
+    nextSyncTime: 0,
+    syncError: null
+  })),
+
+  hasPendingChanges: () => {
+    return Object.keys(get().pendingChanges).length > 0;
+  },
 }));
 
 export default useStore;
