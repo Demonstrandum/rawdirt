@@ -16,11 +16,13 @@ import {
   Chip,
   Pagination,
   Skeleton,
-  LinearProgress
+  LinearProgress,
+  GlobalStyles
 } from '@mui/material';
 import SearchIcon from '@mui/icons-material/Search';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import StopIcon from '@mui/icons-material/Stop';
+import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
 import { RawFile } from '@/types';
 import useStore from '@/store/useStore';
 import { batchProcessRawFiles, processRawFile, updateS3Index } from '@/utils/rawProcessor';
@@ -32,6 +34,40 @@ interface FileBrowserProps {
   onLoadMore: () => void;
   onNavigateToPage?: (page: number) => void;
 }
+
+// Helper function to upload processed metadata to S3 index
+const uploadToS3Index = async (fileKey: string, result: any) => {
+  try {
+    console.log(`[INDEX UPDATE] STARTING upload for ${fileKey}`, result);
+
+    // Check if result has expected properties
+    if (!result || !result.dimensions) {
+      console.warn(`[INDEX UPDATE] Skipping index update for ${fileKey} - missing required data`, result);
+      return;
+    }
+
+    // Prepare metadata for upload
+    const metadataForS3 = {
+      key: fileKey,
+      exifDate: result.exifDate && result.exifDate instanceof Date && !isNaN(result.exifDate.getTime())
+        ? result.exifDate.toISOString()
+        : result.exifDate ? String(result.exifDate) : undefined,
+      width: result.dimensions?.width,
+      height: result.dimensions?.height,
+      originalWidth: result.dimensions?.originalWidth,
+      originalHeight: result.dimensions?.originalHeight,
+      thumbnailDataUrl: result.thumbnailDataUrl,
+    };
+
+    console.log(`[INDEX UPDATE] Prepared metadata for ${fileKey}:`, metadataForS3);
+
+    // Send metadata to S3 index endpoint
+    await updateS3Index(fileKey, metadataForS3);
+    console.log(`[INDEX UPDATE] Successfully updated S3 index for ${fileKey}`);
+  } catch (error) {
+    console.error(`[INDEX UPDATE] FAILED to update S3 index for ${fileKey}:`, error);
+  }
+};
 
 const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage }: FileBrowserProps) => {
   const {
@@ -114,6 +150,27 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
+  // Function to fetch a file's URL on demand
+  const getFileUrl = async (fileKey: string): Promise<string | null> => {
+    try {
+      const params = new URLSearchParams();
+      params.append('key', fileKey);
+      const response = await fetch(`/api/s3/file?${params.toString()}`);
+      if (response.ok) {
+        const data = await response.json();
+        // Update the file in state to cache the URL
+        if (data.url) {
+          updateFileMetadata(fileKey, { url: data.url });
+          return data.url;
+        }
+      }
+      return null;
+    } catch (error) {
+      console.error(`Failed to get URL for ${fileKey}:`, error);
+      return null;
+    }
+  };
+
   const displayedFileCount = filteredFiles.length;
   const ITEMS_PER_PAGE_APPROX = 50;
 
@@ -146,6 +203,10 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
 
   const handlePageChange = (event: React.ChangeEvent<unknown>, page: number) => {
     console.log(`[FileBrowser] Page change requested to page ${page} from ${currentPage}`);
+
+    // Log metadata cache size for debugging
+    const cacheSize = Object.keys(useStore.getState().metadataCache).length;
+    console.log(`[FileBrowser] Metadata cache has ${cacheSize} entries`);
 
     // Don't do anything if we're already on this page or if loading
     if (page === currentPage || isLoading) {
@@ -524,6 +585,15 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
 
             // Update file metadata if we have a result
             if (result) {
+              console.log(`[WORKER COMPLETION] Got result for ${fileKey}:`, {
+                hasExifDate: !!result.exifDate,
+                hasThumbnail: !!result.thumbnailDataUrl,
+                hasDimensions: !!result.dimensions,
+                width: result.dimensions?.width,
+                height: result.dimensions?.height
+              });
+
+              // Update local UI state
               updateFileMetadata(fileKey, {
                 exifDate: result.exifDate,
                 thumbnailDataUrl: result.thumbnailDataUrl,
@@ -532,11 +602,29 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
                 originalWidth: result.dimensions?.originalWidth,
                 originalHeight: result.dimensions?.originalHeight,
               });
+
+              // Upload to S3 index
+              uploadToS3Index(fileKey, result);
+            } else {
+              console.warn(`[WORKER COMPLETION] No result for ${fileKey}, skipping metadata update`);
             }
           });
 
-          // Filter out files without URLs
-          const validFiles = filesToProcess.filter(file => !!file.url);
+          // Filter out files without URLs and files that already have metadata
+          const validFiles = filesToProcess.filter(file => {
+            // Skip files without URLs
+            if (!file.url) return false;
+
+            // Skip files that already have good metadata
+            if (file.exifDate && file.thumbnailDataUrl &&
+                file.width && file.height &&
+                file.originalWidth && file.originalHeight) {
+              console.log(`Skipping ${file.key} - already has complete metadata`);
+              return false;
+            }
+
+            return true;
+          });
 
           // Set the total count based on valid files
           setProcessingStats(prev => ({
@@ -635,6 +723,9 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
               originalWidth: result.dimensions?.originalWidth,
               originalHeight: result.dimensions?.originalHeight,
             });
+
+            // Also upload to S3 index
+            uploadToS3Index(file.key, result);
 
             setProcessingStats(prev => ({
               ...prev,
@@ -800,6 +891,18 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
       flexDirection: 'column',
       overflow: 'hidden' // Contain everything
     }}>
+      {/* Global styles for hover effects */}
+      <GlobalStyles
+        styles={{
+          '.file-list-item': {
+            position: 'relative',
+          },
+          '.file-list-item:hover .download-icon': {
+            opacity: 0.8,
+          }
+        }}
+      />
+
       {/* Header section with search and controls - fixed height */}
       <Box sx={{ p: 2, flexShrink: 0 }}>
         <Typography variant="h6" gutterBottom>
@@ -1050,7 +1153,13 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
             const filePath = file.key.substring(0, file.key.lastIndexOf('/') + 1);
 
             return (
-              <ListItem key={file.key} disablePadding dense>
+              <ListItem
+                key={file.key}
+                disablePadding
+                dense
+                className="file-list-item"
+                sx={{ position: 'relative' }}
+              >
                 <ListItemButton
                   selected={selectedFile?.key === file.key}
                   onClick={() => onSelectFile(file)}
@@ -1088,6 +1197,73 @@ const FileBrowser = ({ onSelectFile, onFetchFiles, onLoadMore, onNavigateToPage 
                     }
                   />
                 </ListItemButton>
+
+                {/* Download link icon - floating and only visible on hover */}
+                <Box
+                  className="download-icon"
+                  sx={{
+                    position: 'absolute',
+                    right: 12,
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    opacity: 0, // Start invisible
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    borderRadius: '50%',
+                    padding: '6px',
+                    zIndex: 2,
+                    transition: 'opacity 0.2s ease, background-color 0.2s ease',
+                    '& svg': {
+                      color: 'white'
+                    },
+                    '&:hover': {
+                      opacity: 1,
+                      backgroundColor: 'rgba(0,0,0,0.7)'
+                    },
+                  }}
+                  onClick={async (e) => {
+                    e.stopPropagation(); // Prevent triggering the ListItemButton click
+
+                    // If we don't have a URL yet, get it first
+                    if (!file.url) {
+                      // Show loading feedback
+                      const target = e.currentTarget;
+                      target.style.backgroundColor = 'rgba(25, 118, 210, 0.7)';
+
+                      const url = await getFileUrl(file.key);
+
+                      // Reset loading state
+                      target.style.backgroundColor = '';
+
+                      if (url) {
+                        // Programmatically trigger download with the newly fetched URL
+                        const link = document.createElement('a');
+                        link.href = url;
+                        link.download = fileName || file.key.split('/').pop() || 'download';
+                        link.target = '_blank';
+                        link.click();
+                      }
+                    }
+                  }}
+                >
+                  {file.url ? (
+                    // If we already have the URL, use a regular anchor tag
+                    <a
+                      href={file.url}
+                      download={fileName}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: 'inherit', textDecoration: 'none', display: 'flex' }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <CloudDownloadIcon fontSize="small" />
+                    </a>
+                  ) : (
+                    // Otherwise just show the icon, and the click handler above will handle the URL fetching
+                    <span style={{ color: 'inherit', textDecoration: 'none', display: 'flex', cursor: 'pointer' }}>
+                      <CloudDownloadIcon fontSize="small" />
+                    </span>
+                  )}
+                </Box>
               </ListItem>
             );
           })}

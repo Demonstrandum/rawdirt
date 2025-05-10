@@ -27,6 +27,9 @@ interface RawdirtStore {
   // Metadata map (key -> metadata)
   metadataMap: Record<string, RawFileMetadata>;
 
+  // Metadata cache for files not in current view
+  metadataCache: Record<string, Partial<RawFile>>;
+
   // Actions
   setFiles: (files: RawFile[], nextToken?: string, totalFoundInScan?: number, hasMore?: boolean, metadataMapForHydration?: Record<string, Partial<RawFileFromIndex>>) => void;
   appendFiles: (newFiles: RawFile[], nextToken?: string, totalAddedInScan?: number, hasMore?: boolean, metadataMapForHydration?: Record<string, Partial<RawFileFromIndex>>) => void;
@@ -36,10 +39,20 @@ interface RawdirtStore {
   incrementPage: () => void;
   resetPagination: () => void;
   setGrandTotalRawFiles: (total: number) => void; // Added this
+  getCachedMetadata: (fileKey: string) => Partial<RawFile> | null; // Add method to retrieve cached metadata
 }
 
 // Helper function to hydrate a file with preloaded metadata
-const hydrateFile = (file: RawFile, metadataMap?: Record<string, Partial<RawFileFromIndex>>): RawFile => {
+const hydrateFile = (file: RawFile, state: RawdirtStore, metadataMap?: Record<string, Partial<RawFileFromIndex>>): RawFile => {
+  // First check if we have this file in our metadataCache
+  const cachedMetadata = state.metadataCache[file.key];
+  if (cachedMetadata) {
+    console.log(`[Store] Using cached metadata for ${file.key}`);
+    // Merge the cached metadata with the file
+    return { ...file, ...cachedMetadata };
+  }
+
+  // Fall back to metadata from the index
   if (metadataMap && metadataMap[file.key]) {
     const indexedMeta = metadataMap[file.key];
     const hydratedFile: RawFile = { ...file };
@@ -98,10 +111,11 @@ const useStore = create<RawdirtStore>((set, get) => ({
   currentPage: 1,
   grandTotalRawFiles: 0,
   metadataMap: {},
+  metadataCache: {},
 
   // Actions
   setFiles: (files, nextToken, totalFoundInScan, hasMore, metadataMapForHydration) => set(state => ({
-    files: files.map(file => hydrateFile(file, metadataMapForHydration)),
+    files: files.map(file => hydrateFile(file, state, metadataMapForHydration)),
     selectedFile: null,
     continuationToken: nextToken,
     totalRawFilesFound: totalFoundInScan !== undefined ? totalFoundInScan : 0,
@@ -118,7 +132,7 @@ const useStore = create<RawdirtStore>((set, get) => ({
     });
 
     return {
-      files: [...state.files, ...newFiles.map(file => hydrateFile(file, metadataMapForHydration))],
+      files: [...state.files, ...newFiles.map(file => hydrateFile(file, state, metadataMapForHydration))],
       continuationToken: nextToken,
       totalRawFilesFound: state.files.length + newFiles.length,
       hasMoreFilesToLoad: hasMore !== undefined ? hasMore : true,
@@ -160,6 +174,7 @@ const useStore = create<RawdirtStore>((set, get) => ({
     const fileIndex = state.files.findIndex(f => f.key === fileKey);
     let newFiles = [...state.files];
     let newSelectedFile = state.selectedFile;
+    let newMetadataCache = { ...state.metadataCache };
 
     if (fileIndex !== -1) {
       newFiles[fileIndex] = { ...newFiles[fileIndex], ...metadataUpdates };
@@ -168,14 +183,23 @@ const useStore = create<RawdirtStore>((set, get) => ({
       }
       console.log('[Store] Updated file in state, new file data:', newFiles[fileIndex]);
     } else {
-      console.warn('[Store] File not found in state with key:', fileKey);
+      // File not in current state (likely from another page) - update metadataCache
+      console.log(`[Store] File not currently in state (may be on another page): ${fileKey}`);
+
+      // Store in metadata cache
+      newMetadataCache[fileKey] = {
+        ...newMetadataCache[fileKey],
+        ...metadataUpdates,
+        key: fileKey, // Ensure the key is set
+      };
+
+      console.log(`[Store] Added/updated metadata in cache for: ${fileKey}`);
     }
 
-    // Also update metadataMap if you plan to use it as a central store for all metadata
-    // For now, just updating the file object in the files array and selectedFile
     return {
       files: newFiles,
       selectedFile: newSelectedFile,
+      metadataCache: newMetadataCache
     };
   }),
 
@@ -190,6 +214,8 @@ const useStore = create<RawdirtStore>((set, get) => ({
   })),
 
   setGrandTotalRawFiles: (total) => set({ grandTotalRawFiles: total }),
+
+  getCachedMetadata: (fileKey) => get().metadataCache[fileKey] || null,
 }));
 
 export default useStore;

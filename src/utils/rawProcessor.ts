@@ -227,29 +227,41 @@ export async function updateS3Index(
   }
 ) {
   try {
+    console.log('[S3 INDEX] Sending metadata to API for:', fileKey, metadata);
+
+    const requestBody = {
+      fileKey,
+      metadata: {
+        ...metadata,
+        // Convert Date objects to strings for JSON, with proper type checking
+        exifDate: metadata.exifDate && metadata.exifDate instanceof Date && !isNaN(metadata.exifDate.getTime())
+          ? metadata.exifDate.toISOString()
+          : metadata.exifDate ? String(metadata.exifDate) : undefined,
+      }
+    };
+
+    console.log('[S3 INDEX] API request body:', JSON.stringify(requestBody));
+
     const response = await fetch('/api/metadata/index', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        fileKey,
-        metadata: {
-          ...metadata,
-          // Convert Date objects to strings for JSON
-          exifDate: metadata.exifDate ? metadata.exifDate.toISOString() : undefined,
-        }
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error('[S3 INDEX] API response not OK:', response.status, errorText);
       throw new Error(`Failed to update S3 index: ${errorText}`);
     }
 
-    return await response.json();
+    const responseData = await response.json();
+    console.log('[S3 INDEX] API response:', responseData);
+
+    return responseData;
   } catch (error) {
-    console.error('[RAW Processor] Error updating S3 index:', error);
+    console.error('[S3 INDEX] Error updating S3 index:', error);
     throw error;
   }
 }
